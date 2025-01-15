@@ -5,78 +5,84 @@ import threading
 from data_acquisition import DataAcquisition
 from device_status import DeviceStatus
 from radar import RadarPlotter
+from radar_analyzer import RadarAnalyzer
 
 def main():
     data_queue = queue.Queue()
     device_status = DeviceStatus()
 
-    # Example: define your serial ports & their known device names or just let them self-identify
     ports = [
         "/dev/ttyACM0",
         "/dev/ttyUSB0"
-        # "/dev/ttyACM1",
-        # ...
     ]
     baudrate = 115200
 
-    # Start data acquisition threads
     threads = []
     for idx, port in enumerate(ports):
         t = DataAcquisition(port, baudrate, data_queue, name=f"DataAcqThread-{idx}")
         t.start()
         threads.append(t)
 
-    # Start a background thread that consumes the queue and updates DeviceStatus
     stop_flag = threading.Event()
+
     def consumer_loop():
         while not stop_flag.is_set():
             try:
-                # Wait up to 0.5s for at least one item
                 data = data_queue.get(timeout=0.5)
-                # Process the first item
+                # Identify device ID
                 if "DeviceID" in data:
                     device_id = data["DeviceID"]
                 elif "MAC" in data:
                     device_id = data["MAC"]
                 else:
                     device_id = data.get("__port__", "UnknownDevice")
-                
                 device_status.update_device(device_id, data)
 
-                # Now drain the rest of the queue
+                # Drain the queue
                 while True:
                     try:
-                        data = data_queue.get_nowait()  # get remaining items
+                        data = data_queue.get_nowait()
                         if "DeviceID" in data:
                             device_id = data["DeviceID"]
                         elif "MAC" in data:
                             device_id = data["MAC"]
                         else:
                             device_id = data.get("__port__", "UnknownDevice")
-                        
                         device_status.update_device(device_id, data)
                     except queue.Empty:
                         break
 
             except queue.Empty:
-                # No data arrived this 0.5s
                 pass
-
-
-
 
     consumer_thread = threading.Thread(target=consumer_loop, daemon=True)
     consumer_thread.start()
 
-    # Create and run the live radar plot
+    # Suppose you define coords for each device
+    device_coords = {
+        # Adjust these for your real setup
+        "E8:9C:25:06:E9:80": (0.065, 0),  # Master at x=6.5cm
+        "E9:9C:25:06:E9:80": (0.13, 0),   # Slave at x=13cm
+        # You can also define an "AP": (0,0) if you like
+    }
+
+    # Start the radar analyzer
+    analyzer = RadarAnalyzer(device_status, device_coords, interval=1.0)
+    analyzer.start()
+
+    # Optionally create and run a RadarPlotter
     radar_plotter = RadarPlotter(device_status)
     radar_plotter.run()
-    
-    # Once the user closes the plot window, we stop everything
+
+    # Once user closes the plot window, we stop everything
     stop_flag.set()
+    analyzer.stop()
+    analyzer.join()
+
     for t in threads:
         t.stop()
         t.join()
+
     consumer_thread.join()
     print("[INFO] Exiting main.")
 

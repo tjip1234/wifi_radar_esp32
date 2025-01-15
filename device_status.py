@@ -2,7 +2,7 @@ import threading
 from collections import deque
 
 MAX_CSI_FRAMES = 300
-MASTER_ID = "E8:9C:25:06:E9:80"  # Adjust to your actual master MAC/ID
+MASTER_ID = "E8:9C:25:06:E9:80"  # Adjust if your master MAC is different
 
 class DeviceStatus:
     def __init__(self):
@@ -17,12 +17,16 @@ class DeviceStatus:
         if device_id not in self.devices:
             self.devices[device_id] = {
                 "RSSI": None,
+                # Instead of storing just a list for 'CSI', we store
+                # a deque of dicts: [{"Timestamp": ..., "CSI": [...]}, ...]
                 "CSI": deque(maxlen=MAX_CSI_FRAMES),
+
                 "IPAddress": None,
                 "Gateway": None,
                 "Netmask": None,
                 "FreeHeap": None,
                 "FreeInternalHeap": None,
+
                 "SyncCount": None,
                 "LastSyncTimestamp": None,
                 "Offset": 0  # This device’s offset to MASTER’s clock
@@ -33,18 +37,18 @@ class DeviceStatus:
             self._ensure_device_exists(device_id)
             dev = self.devices[device_id]
 
-            # 1) MASTER vs SLAVE sync updates
+            # 1) Handle Sync data (Master vs. Slave)
             if "SyncCount" in data and "Timestamp" in data:
                 sync_count = data["SyncCount"]
                 ts = data["Timestamp"]
 
                 if device_id == MASTER_ID:
-                    # MASTER: record this sync in master_sync_history
+                    # Master device => record in master_sync_history
                     self.master_sync_history[sync_count] = ts
                     dev["SyncCount"] = sync_count
                     dev["LastSyncTimestamp"] = ts
                 else:
-                    # SLAVE: we have a new sync. Compare to master’s sync_count if found.
+                    # Slave device => see if Master has same sync_count
                     dev["SyncCount"] = sync_count
                     dev["LastSyncTimestamp"] = ts
 
@@ -53,37 +57,40 @@ class DeviceStatus:
                         offset = master_ts - ts
                         old_offset = dev["Offset"]
                         dev["Offset"] = offset
-                        # If offset changes drastically, you could warn
-                        print(f"[DEBUG] offset now : {offset}")
+                        print(f"[DEBUG] {device_id} offset now: {offset}")
                         if abs(offset - old_offset) > 1_000_000:
                             print(f"[WARN] {device_id}: Offset changed by "
                                   f"{offset - old_offset} us (now {offset})")
                     else:
-                        # We don’t have a matching master sync_count yet
+                        # No matching master sync_count yet
                         pass
 
-            # 2) If this is a CSI or RSSI update, handle offset if needed
+            # 2) Adjust any incoming Timestamp by the device's offset (if it exists)
             if "Timestamp" in data:
-                # Adjust the reported timestamp by the device’s offset
-                # so we store “master-based” time.
-                # For the master itself, offset=0 => no change.
                 data["Timestamp"] = data["Timestamp"] + dev["Offset"]
 
+            # 3) Update RSSI if present
             if "RSSI" in data:
                 dev["RSSI"] = data["RSSI"]
 
+            # 4) If CSI is present, store {"Timestamp":..., "CSI":[...]} in the deque
             if "CSI" in data and isinstance(data["CSI"], list):
-                # We assume offset is already applied to data["Timestamp"] if present
-                dev["CSI"].append(data["CSI"])
+                # We'll store the already-offset timestamp (or None if not provided)
+                csi_ts = data.get("Timestamp", None)
+                csi_entry = {
+                    "Timestamp": csi_ts,
+                    "CSI": data["CSI"]
+                }
+                dev["CSI"].append(csi_entry)
+
                 curr_size = len(dev["CSI"])
                 if curr_size < MAX_CSI_FRAMES:
-                    print(f"[DEBUG] Device {device_id}: CSI buffer size = "
-                          f"{curr_size}/{MAX_CSI_FRAMES}")
+                    print(f"[DEBUG] Device {device_id}: CSI buffer size = {curr_size}/{MAX_CSI_FRAMES}")
                 else:
                     print(f"[DEBUG] Device {device_id}: CSI buffer FULL at {MAX_CSI_FRAMES}!")
 
-            # IP & memory
-            for key in ["IPAddress","Gateway","Netmask","FreeHeap","FreeInternalHeap"]:
+            # 5) IP & memory fields if present
+            for key in ["IPAddress", "Gateway", "Netmask", "FreeHeap", "FreeInternalHeap"]:
                 if key in data:
                     dev[key] = data[key]
 
@@ -91,6 +98,9 @@ class DeviceStatus:
         with self.lock:
             snapshot = {}
             for d_id, vals in self.devices.items():
+                # For CSI, we convert the deque of dicts to a list of dicts
+                csi_list = list(vals["CSI"])
+
                 snapshot[d_id] = {
                     "RSSI": vals["RSSI"],
                     "IPAddress": vals["IPAddress"],
@@ -100,7 +110,7 @@ class DeviceStatus:
                     "FreeInternalHeap": vals["FreeInternalHeap"],
                     "SyncCount": vals["SyncCount"],
                     "LastSyncTimestamp": vals["LastSyncTimestamp"],
-                    "Offset": vals["Offset"],  # For debugging
-                    "CSI": list(vals["CSI"])
+                    "Offset": vals["Offset"],
+                    "CSI": csi_list
                 }
             return snapshot
