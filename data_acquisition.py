@@ -17,12 +17,14 @@ class DataAcquisition(threading.Thread):
         self._stop_event = threading.Event()
         self.serial_conn = None
 
+
         # Maximum characters we'll buffer before giving up on the current JSON
         self.MAX_BUFFER_LEN = max_buffer_len
 
     def run(self):
         try:
             self.serial_conn = serial.Serial(self.port, self.baudrate, timeout=1)
+
             print(f"[{self.name}] Connected on {self.port}")
 
             buffer = ""
@@ -71,6 +73,7 @@ class DataAcquisition(threading.Thread):
             print(f"[{self.name}] Serial exception on {self.port}: {e}")
         finally:
             if self.serial_conn and self.serial_conn.is_open:
+                self.serial_conn.flush()
                 self.serial_conn.close()
                 print(f"[{self.name}] Closed {self.port}")
 

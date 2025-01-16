@@ -84,10 +84,10 @@ class DeviceStatus:
                 dev["CSI"].append(csi_entry)
 
                 curr_size = len(dev["CSI"])
-                if curr_size < MAX_CSI_FRAMES:
-                    print(f"[DEBUG] Device {device_id}: CSI buffer size = {curr_size}/{MAX_CSI_FRAMES}")
-                else:
-                    print(f"[DEBUG] Device {device_id}: CSI buffer FULL at {MAX_CSI_FRAMES}!")
+                #if curr_size < MAX_CSI_FRAMES:
+                    #print(f"[DEBUG] Device {device_id}: CSI buffer size = {curr_size}/{MAX_CSI_FRAMES}")
+                #else:
+                    #print(f"[DEBUG] Device {device_id}: CSI buffer FULL at {MAX_CSI_FRAMES}!")
 
             # 5) IP & memory fields if present
             for key in ["IPAddress", "Gateway", "Netmask", "FreeHeap", "FreeInternalHeap"]:

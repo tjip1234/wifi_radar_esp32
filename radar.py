@@ -30,95 +30,74 @@ def pad_csi_frames(csi_frames):
 
 
 class RadarPlotter:
-    def __init__(self, device_status):
-        """
-        device_status: a reference to the DeviceStatus instance
-        storing device data including RSSI, FreeHeap, IPAddress, CSI, etc.
-        """
+    def __init__(self, device_status, analyzer):
         self.device_status = device_status
+        self.analyzer = analyzer
 
-        # Set up the figure with GridSpec: 2 rows, 2 columns
-        # The bottom row spans both columns for the CSI heatmap.
-        self.fig = plt.figure(figsize=(12, 8))
-        gs = gridspec.GridSpec(nrows=2, ncols=2, figure=self.fig, height_ratios=[1, 1.2])
+        self.fig = plt.figure(figsize=(16, 10))
+        gs = gridspec.GridSpec(nrows=3, ncols=2, figure=self.fig, height_ratios=[1, 1, 1.5])
 
-        # Top-left: RSSI bar chart
+        # RSSI subplot
         self.ax_rssi = self.fig.add_subplot(gs[0, 0])
-        self.ax_rssi.set_title("RSSI (live)")
-        self.ax_rssi.set_xlabel("Device")
-        self.ax_rssi.set_ylabel("RSSI (dBm)")
-
-        # Top-right: Memory free bar chart + IP text
+        # Memory subplot
         self.ax_mem = self.fig.add_subplot(gs[0, 1])
-        self.ax_mem.set_title("Memory (FreeHeap)")
-        self.ax_mem.set_xlabel("Device")
-        self.ax_mem.set_ylabel("Bytes")
+        # Radar subplot
+        self.ax_radar = self.fig.add_subplot(gs[1, :])
+        self.ax_radar.set_aspect('equal', 'box')
 
-        # Bottom (spanning 2 columns): CSI heatmap
-        self.ax_csi = self.fig.add_subplot(gs[1, :])
-        self.ax_csi.set_title("CSI Heatmap")
-        self.ax_csi.set_xlabel("Subcarrier Index")
-        self.ax_csi.set_ylabel("Frame # (oldest=top)")
+        # Subcarrier spectrogram subplot
+        self.ax_subcarriers = self.fig.add_subplot(gs[2, :])
 
-        # We'll keep references to our artists
+        # Initialize spectrogram references
+        self.spectrogram = None  # pcolormesh object for the spectrogram
+        self.colorbar_spectrogram = None  # Colorbar for the spectrogram
+
+        self.colorbar = None  # Store the colorbar reference for radar plot
+        self.scatter = None  # Store the scatter plot reference
         self.anim = None
 
     def init_plots(self):
-        """
-        Called once at the start of FuncAnimation to set up our artists
-        (if needed). Since we redraw everything in update_plots, we can leave 
-        this empty or do minimal placeholders.
-        """
+        # Initialize radar plot
+        self.scatter = self.ax_radar.scatter([], [], c=[], cmap='jet', s=100, alpha=0.8)
+        self.colorbar = self.fig.colorbar(self.scatter, ax=self.ax_radar)
+        self.colorbar.set_label("Motion Score")
         return []
 
     def update_plots(self, frame):
-        """
-        Called periodically by FuncAnimation to update the plots with new data.
-        """
         devices_data = self.device_status.get_all_devices()
         device_ids = list(devices_data.keys())
 
-        # ==============
-        #  RSSI Subplot
-        # ==============
+        # --------
+        # RSSI
+        # --------
         self.ax_rssi.clear()
         self.ax_rssi.set_title("RSSI (live)")
         self.ax_rssi.set_xlabel("Device")
         self.ax_rssi.set_ylabel("RSSI (dBm)")
 
-        rssi_values = []
-        for d_id in device_ids:
-            rssi = devices_data[d_id].get("RSSI", 0)
-            rssi_values.append(rssi if rssi is not None else 0)
-
+        rssi_values = [devices_data[d_id].get("RSSI", 0) or 0 for d_id in device_ids]
         self.ax_rssi.bar(device_ids, rssi_values, color='blue')
 
-        # =====================
-        #  Memory + IP Subplot
-        # =====================
+        # --------
+        # Memory
+        # --------
         self.ax_mem.clear()
         self.ax_mem.set_title("Memory (FreeHeap)")
         self.ax_mem.set_xlabel("Device")
         self.ax_mem.set_ylabel("Bytes")
 
-        mem_values = []
-        for d_id in device_ids:
-            free_heap = devices_data[d_id].get("FreeHeap", 0)
-            mem_values.append(free_heap if free_heap is not None else 0)
-
+        mem_values = [devices_data[d_id].get("FreeHeap", 0) or 0 for d_id in device_ids]
         mem_bars = self.ax_mem.bar(device_ids, mem_values, color='green')
 
-        # Place IP address text above each bar (if available)
         for i, bar in enumerate(mem_bars):
             dev_id = device_ids[i]
             ip_addr = devices_data[dev_id].get("IPAddress", None)
             if ip_addr:
-                # The top of the bar
                 height = bar.get_height()
-                x_pos = bar.get_x() + bar.get_width()/2
+                x_pos = bar.get_x() + bar.get_width() / 2
                 self.ax_mem.text(
-                    x_pos, 
-                    height + (0.02 * height if height else 1000),  # shift text above bar
+                    x_pos,
+                    height + max(1000, 0.02 * height),
                     f"{ip_addr}",
                     ha='center',
                     va='bottom',
@@ -126,48 +105,73 @@ class RadarPlotter:
                     fontsize=9
                 )
 
-        # ===================
-        #  CSI Heatmap Subplot
-        # ===================
-        self.ax_csi.clear()
+        # --------
+        # Radar
+        # --------
+        x_vals = []
+        y_vals = []
+        motion_vals = []
 
-        if device_ids:
-            # For demonstration, pick the first device to show CSI
-            first_device = device_ids[0]
-            self.ax_csi.set_title(f"CSI Heatmap (device: {first_device})")
+        for d_id in device_ids:
+            coords = self.analyzer.device_coords.get(d_id, (0.0, 0.0))
+            x_vals.append(coords[0])
+            y_vals.append(coords[1])
 
-            csi_frames = devices_data[first_device].get("CSI", [])
-            if csi_frames:
-                # Pad frames so they all have the same length
-                csi_matrix = pad_csi_frames(csi_frames)
-            else:
-                csi_matrix = np.zeros((1,1))
+            # Shift motion scores by 120 to ensure all values are positive
+            motion_score = self.analyzer.motion_scores.get(d_id, 0.0)
+            motion_vals.append(motion_score + 120)
 
-            self.ax_csi.imshow(
-                csi_matrix,
-                aspect='auto',
-                origin='upper',  # newest at bottom if you keep frames in chronological order
-                interpolation='nearest'
-            )
-            self.ax_csi.set_xlabel("Subcarrier Index")
-            self.ax_csi.set_ylabel("Frame # (oldest=top)")
-        else:
-            self.ax_csi.set_title("CSI Heatmap (no devices)")
-            self.ax_csi.imshow([[0]], aspect='auto')
+        self.scatter.set_offsets(np.c_[x_vals, y_vals])
+        self.scatter.set_array(np.array(motion_vals))
+        self.scatter.set_clim(vmin=120, vmax=200)
+        self.colorbar.update_normal(self.scatter)
+
+        self.ax_radar.set_xlim(min(x_vals) - 10, max(x_vals) + 10)
+        self.ax_radar.set_ylim(min(y_vals) - 10, max(y_vals) + 10)
+
+        # --------
+        # Subcarrier Spectrogram
+        # --------
+        self.ax_subcarriers.clear()
+        self.ax_subcarriers.set_title("Subcarrier Spectrogram E9:9C:25:06:E9:80")
+        self.ax_subcarriers.set_xlabel("Time (s)")
+        self.ax_subcarriers.set_ylabel("Frequency (Hz)")
+
+        example_device = "E9:9C:25:06:E9:80"
+        if example_device and example_device in self.analyzer.subcarrier_data:
+            subcarrier_results = self.analyzer.subcarrier_data[example_device]
+
+            # Plot data for the first subcarrier as an example
+            subcarrier_index = 0
+            if subcarrier_index in subcarrier_results:
+                f, t_stft, Zxx_dB, _ = subcarrier_results[subcarrier_index]
+
+                # Ensure Zxx_dB has the correct shape
+                if Zxx_dB.shape == (len(f), len(t_stft)):
+                    # Create or update the spectrogram
+                    self.spectrogram = self.ax_subcarriers.pcolormesh(
+                        t_stft, f, Zxx_dB, shading='gouraud', cmap='jet'
+                    )
+                    if self.colorbar_spectrogram is None:
+                        self.colorbar_spectrogram = plt.colorbar(
+                            self.spectrogram, ax=self.ax_subcarriers, label="Power (dB)"
+                        )
+                    else:
+                        self.colorbar_spectrogram.update_normal(self.spectrogram)
+                else:
+                    print(f"[WARN] Skipping spectrogram: shape mismatch for device {example_device}")
 
         return []
 
+
     def run(self):
-        """
-        Start the animation loop. This blocks until the figure is closed.
-        """
         self.anim = animation.FuncAnimation(
             self.fig,
             self.update_plots,
             init_func=self.init_plots,
             blit=False,
-            interval=1000,    # update every 1 second (adjust as needed)
-            save_count=300    # cap the frame cache to 300
+            interval=100,
+            save_count=300
         )
         plt.tight_layout()
         plt.show(block=True)
